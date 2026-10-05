@@ -1,22 +1,20 @@
 {
-  "PAI_LIVE_1": {
-    "industry": "Retail",
-    "brand_logic": "Use the custom field T2.\"U_Brand\". DO NOT join the OMRC table.",
-    "location_logic": "Always group/select branch locations using COALESCE(OWHS.\"U_Location\", OWHS.\"WhsName\").",
-    "ai_prompt_exclusions": [
-      "Defective warehouses: LOWER(OWHS.\"WhsName\") NOT LIKE '%defect%'",
-      "Carry bags / packing items: LOWER(T1.\"ItemCode\") NOT LIKE '%carry%' AND LOWER(T1.\"Dscription\") NOT LIKE '%carry bag%'"
-    ],
-    "firewall_regex_rules": [
-      "LOWER\\(\\s*OWHS\\.\"WHSNAME\"\\s*\\)\\s+NOT\\s+LIKE\\s+'%DEFECT%'",
-      "NOT\\s+LIKE\\s+'%CARRY%'"
-    ]
-  },
   "DEFAULT": {
     "industry": "Standard SAP B1",
-    "brand_logic": "Join T2 to OMRC on T2.\"FirmCode\" = OMRC.\"FirmCode\". Use OMRC.\"FirmName\" for brand.",
-    "location_logic": "Use OWHS.\"City\" or OWHS.\"WhsName\" for branch locations.",
+    "brand_logic": "Extract brand from OITM.\"U_Brand\".",
+    "location_logic": "Use OWHS.\"Location\" or OWHS.\"WhsName\".",
     "ai_prompt_exclusions": [],
+    "firewall_regex_rules": []
+  },
+  "PAI_LIVE_1": {
+    "industry": "Retail & Distribution",
+    "brand_logic": "Extract brand strictly from OITM.\"U_Brand\". Do NOT use OMRC table.",
+    "location_logic": "Extract branch location strictly using OWHS.\"Location\" or OWHS.\"WhsName\". Do NOT use U_Location.",
+    "ai_prompt_exclusions": [
+      "Exclude stock transfers entirely. Never query OWTR or WTR1.",
+      "Exclude defective warehouses containing 'defect'.",
+      "Exclude carry bags and packing items in item codes or descriptions."
+    ],
     "firewall_regex_rules": []
   }
 }

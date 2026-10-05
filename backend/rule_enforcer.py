@@ -1,7 +1,7 @@
 import re
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Tuple, Any
 
 _LITERAL = re.compile(r"'(?:[^']|'')*'")
 
@@ -11,23 +11,30 @@ _FLAG_COLUMNS = {
 }
 
 _BLOCKED = [
-    r"\bDROP\s+(TABLE|VIEW|DATABASE|SCHEMA|INDEX|USER)\b",
-    r"\bDELETE\s+FROM\b", r"\bUPDATE\s+\S+\s+SET\b", r"\bINSERT\s+INTO\b",
-    r"\bALTER\s+(TABLE|VIEW|DATABASE|SCHEMA|USER)\b", r"\bEXEC(UTE)?\s+",
-    r"\bTRUNCATE\b", r"\bMERGE\s+INTO\b", r"\bGRANT\s+", r"\bREVOKE\s+",
-    r"\bCREATE\s+(TABLE|VIEW|DATABASE|SCHEMA|INDEX|USER)\b", r"\bCALL\s+",
-    r"--", r"/\*", r";", r"\bWITH\b",
+    r"\bDROP\s+", r"\bDELETE\s+", r"\bUPDATE\s+", r"\bINSERT\s+",
+    r"\bALTER\s+", r"\bEXEC(UTE)?\s+", r"\bTRUNCATE\s+", r"\bMERGE\s+",
+    r"\bGRANT\s+", r"\bREVOKE\s+", r"\bCREATE\s+", r"\bCALL\s+",
+    r"--", r"/\*", r";", r"\bWITH\s+", r"\bINTO\s+", r"\bCROSS\s+JOIN\s+",
+    r"\bSYS\.", r"\b_SYS_", r"\bM_\w+\b", r"\bOUSR\b"
 ]
 
-# Load Tenant Config
 CONFIG_PATH = Path(__file__).parent / "tenant_config.json"
-with open(CONFIG_PATH, "r") as f:
-    TENANT_CONFIG = json.load(f)
+try:
+    with open(CONFIG_PATH, "r") as f:
+        TENANT_CONFIG = json.load(f)
+except Exception:
+    TENANT_CONFIG = {"DEFAULT": {"brand_logic": "", "location_logic": "", "ai_prompt_exclusions": [], "firewall_regex_rules": []}}
+
+def _T(name: str) -> str:
+    return rf'(?:"[^"]+"\.)?"?{name}"?'
+
+def _C(alias: str, col: str) -> str:
+    return rf'\b{alias}\."?{col}"?'
 
 def _normalise(sql: str) -> str:
     return " ".join(sql.strip().rstrip(";").split())
 
-def is_sql_safe(sql: Optional[str]) -> bool:
+def is_sql_safe(sql: str) -> bool:
     if not sql or not isinstance(sql, str):
         return False
     code = _LITERAL.sub("''", _normalise(sql))
@@ -35,58 +42,75 @@ def is_sql_safe(sql: Optional[str]) -> bool:
         return False
     return not any(re.search(p, code, re.IGNORECASE) for p in _BLOCKED)
 
-def check_business_rules(sql: str, company_id: str) -> List[str]:
+def check_business_rules(sql: str, company_id: str) -> Tuple[str, List[str]]:
     v: List[str] = []
-    s = _normalise(sql)
-    full = s.upper()                       
-    code = _LITERAL.sub("''", s).upper()   
+    norm_sql = _normalise(sql)
+    code_upper = _LITERAL.sub("''", norm_sql).upper()
 
-    # --- 1. UNIVERSAL RULES (Applies to ALL SAP B1 Companies) ---
-    if not re.match(r"^SELECT\s+(DISTINCT\s+)?TOP\s+25\b", code):
-        v.append("Query must start exactly with SELECT TOP 25.")
+    # Universal Rules
+    if not re.match(r"^SELECT\s+(DISTINCT\s+)?TOP\s+25\b", code_upper):
+        v.append("Query must start with SELECT TOP 25.")
 
-    if re.search(r"\b(ROUND|CAST)\s*\(", code):
-        v.append("ROUND()/CAST() are forbidden; return raw numeric database values.")
+    if re.search(r"\bROUND\s*\(", code_upper) or re.search(r"\bCAST\s*\(", code_upper):
+        v.append("ROUND() and CAST() are forbidden. Return raw numeric database values.")
 
-    has_agg = re.search(r"\b(SUM|COUNT|AVG|MIN|MAX)\s*\(", code)
-    if ("GROUP BY" in code or not has_agg) and not re.search(r"\bORDER\s+BY\b", code):
-        v.append("You must include an explicit ORDER BY clause for determinism.")
+    has_agg = re.search(r"\b(SUM|COUNT|AVG|MIN|MAX)\s*\(", code_upper)
+    if (has_agg or "GROUP BY" in code_upper) and not re.search(r"\bORDER\s+BY\s+", code_upper):
+        v.append("You must include an explicit ORDER BY clause when aggregating data.")
 
-    for m in re.finditer(r"\b[A-Z0-9_]+\.\"(\w+)\"\s*(?:=|<>|NOT\s+LIKE|LIKE)\s*'", full):
-        if m.group(1).upper() not in _FLAG_COLUMNS:
-            v.append(f'Text filter on "{m.group(1)}" must use LOWER() on both sides.')
-            break
+    # Strictly forbid Stock Transfers
+    if re.search(r"\b(OWTR|WTR1|OWTQ|WTQ1)\b", code_upper):
+        v.append("RULE VIOLATION: Stock transfers are strictly excluded. You must query actual sales invoices.")
 
-    if re.search(r"\bOINV\b", code):
-        if not re.search(r"\bOINV\s+(AS\s+)?T0\b", code):
+    if company_id and company_id.upper() != "DEFAULT":
+        schema_matches = re.findall(r'FROM\s+"([^"]+)"\.', code_upper)
+        for schema in schema_matches:
+            if company_id.upper() not in schema.upper():
+                v.append(f"RULE VIOLATION: Cross-schema query to '{schema}' is forbidden.")
+
+    # Field/Schema Rules
+    if "U_REQWHS" in code_upper:
+        v.append("RULE VIOLATION: Never use header-level U_ReqWhs. You MUST use line-level T1.\"WhsCode\".")
+    if "OMRC" in code_upper:
+        v.append("RULE VIOLATION: The OMRC table is forbidden. Use OITM.\"U_Brand\" instead.")
+    if "U_LOCATION" in code_upper:
+        v.append("RULE VIOLATION: U_Location is forbidden. Use OWHS.\"Location\" or OWHS.\"WhsName\".")
+
+    # Invoice specific rules
+    if re.search(_T("OINV"), code_upper) or re.search(_T("INV1"), code_upper):
+        if not re.search(_T("OINV") + r'\s+(?:AS\s+)?T0\b', code_upper):
             v.append("You must alias OINV as T0.")
-        if not re.search(r"\bINV1\s+(AS\s+)?T1\b", code):
+        if not re.search(_T("INV1") + r'\s+(?:AS\s+)?T1\b', code_upper):
             v.append("You must join INV1 as T1.")
-        if not re.search(r"T0\.\"DOCTYPE\"\s*=\s*'I'", full):
+        
+        # ADDED re.IGNORECASE so "DocType" and "DOCTYPE" both pass!
+        if not re.search(_C("T0", "DOCTYPE") + r"\s*=\s*'I'", norm_sql, re.IGNORECASE):
             v.append("Missing filter T0.\"DocType\" = 'I'.")
-        if not re.search(r"T0\.\"CANCELED\"\s*=\s*'N'", full):
+        if not re.search(_C("T0", "CANCELED") + r"\s*=\s*'N'", norm_sql, re.IGNORECASE):
             v.append("Missing filter T0.\"CANCELED\" = 'N'.")
+        if not re.search(_C("T1", "TREETYPE") + r"\s*<>\s*'S'", norm_sql, re.IGNORECASE):
+            v.append("Must exclude bundles: T1.\"TreeType\" <> 'S'.")
+        if re.search(_C("T0", "DOCTOTAL"), code_upper):
+            v.append("RULE VIOLATION: Never use T0.\"DocTotal\". Use SUM(T1.\"LineTotal\").")
 
-        if "U_REQWHS" in code:
-            v.append("RULE VIOLATION: Never use U_ReqWhs. You MUST join via line-level T1.\"WhsCode\".")
-            
-        if not re.search(r"T1\.[\"']?WHSCODE[\"']?\s*=\s*OWHS\.[\"']?WHSCODE[\"']?", code) and \
-           not re.search(r"OWHS\.[\"']?WHSCODE[\"']?\s*=\s*T1\.[\"']?WHSCODE[\"']?", code):
-            v.append('RULE VIOLATION: You must join warehouses exactly via T1."WhsCode" = OWHS."WhsCode".')
-            
-        if not re.search(r"T1\.\"TREETYPE\"\s*<>\s*'S'", full):
-            v.append("Must exclude bundles. Ensure T1.\"TreeType\" <> 'S'.")
+        # PAI_LIVE_1 Specific Invoice Filters
+        if company_id == "PAI_LIVE_1":
+            raw_upper = norm_sql.upper()
+            if "DEFECT" not in raw_upper:
+                v.append("PAI_LIVE_1 Rule Violation: Must exclude defective warehouses (e.g., LOWER(OWHS.\"WhsName\") NOT LIKE '%defect%').")
+            if "CARRY" not in raw_upper:
+                v.append("PAI_LIVE_1 Rule Violation: Must exclude carry bags/packing items (e.g., LOWER(T1.\"ItemCode\") NOT LIKE '%carry%').")
 
-    # --- 2. TENANT-SPECIFIC RULES (From JSON Config) ---
-    tenant_rules = TENANT_CONFIG.get(company_id, TENANT_CONFIG["DEFAULT"])
-    custom_firewalls = tenant_rules.get("firewall_regex_rules", [])
-    
-    for regex_rule in custom_firewalls:
-        # If the query hits OINV but is missing the custom exclusion, block it
-        if re.search(r"\bOINV\b", code) and not re.search(regex_rule, full):
-            v.append(f"Missing required business filter for this company. Rule regex: {regex_rule}")
+        # PAI_LIVE_1 Specific Invoice Filters
+        if company_id == "PAI_LIVE_1":
+            raw_upper = norm_sql.upper()
+            if "DEFECT" not in raw_upper:
+                v.append("PAI_LIVE_1 Rule Violation: Must exclude defective warehouses (e.g., LOWER(OWHS.\"WhsName\") NOT LIKE '%defect%').")
+            if "CARRY" not in raw_upper:
+                v.append("PAI_LIVE_1 Rule Violation: Must exclude carry bags/packing items (e.g., LOWER(T1.\"ItemCode\") NOT LIKE '%carry%').")
+    return norm_sql, v
 
-    return v
-
-def slice_rows(result, n: int = 25):
-    return result[:n] if isinstance(result, list) else []
+def slice_rows(result: Any, n: int = 25) -> list:
+    if isinstance(result, list):
+        return result[:n]
+    return []
