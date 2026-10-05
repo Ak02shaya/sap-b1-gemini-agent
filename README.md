@@ -29,7 +29,7 @@ Create a .env file in the root directory and add your necessary API keys and dat
 
 Code snippet
 ANTHROPIC_API_KEY=your_api_key_here
-CLAUDE_MODEL=claude-sonnet-4-6
+CLAUDE_MODEL=gemini-3-5-flash
 # Add any SAP HANA / VZone connection URLs here
 3. Install the required dependencies:
 It is recommended to use a virtual environment. Install the necessary Python packages using pip:
