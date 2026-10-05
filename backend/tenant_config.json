@@ -8,7 +8,7 @@
   },
   "PAI_LIVE_1": {
     "industry": "Retail & Distribution",
-    "brand_logic": "Extract brand strictly from OITM.\"U_Brand\". Do NOT use OMRC table.",
+    "brand_logic": "Extract brand strictly from OITM.\"U_HC\". Filter out empty brands by adding: AND T2.\"U_HC\" IS NOT NULL AND T2.\"U_HC\" <> ''.",
     "location_logic": "Extract branch location strictly using OWHS.\"Location\" or OWHS.\"WhsName\". Do NOT use U_Location.",
     "ai_prompt_exclusions": [
       "Exclude stock transfers entirely. Never query OWTR or WTR1.",
