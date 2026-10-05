@@ -201,6 +201,7 @@ TOOL WORKFLOW
 5. CRITICAL: Do not generate alternative test queries. If execute_sap_sql succeeds (returns data or an empty list []), you MUST immediately call submit_dashboard in the very next step. 
 6. Never try to query SYS tables or debug the database schema if data is empty. Just submit the dashboard stating no data was found.
 7. Never call submit_dashboard before successful SQL execution.
+8. ABSOLUTELY NO PLAIN TEXT: You must NEVER answer the user with conversational text. Your final action MUST ALWAYS be a call to the submit_dashboard tool.
 
 OUTPUT
 - Use simple business language.
@@ -224,7 +225,7 @@ OUTPUT
     
     messages.append({"role": "user", "parts": [question]})
     
-    max_steps = 6 
+    max_steps = 5 
 
     for step in range(max_steps):
         try:
@@ -302,6 +303,8 @@ OUTPUT
             else:
                 # Text-only response fallback
                 raw_text = "".join(part.text for part in model_message.parts if hasattr(part, "text"))
+                if not raw_text.strip():
+                    raw_text = "The AI executed the query but failed to format the dashboard. Data may be empty."
                 logger.warning(f"Model attempted to chat instead of using a tool: {raw_text}")
                 
                 if not session_state.get("final_executed_sql") and step < max_steps - 1:
