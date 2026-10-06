@@ -101,6 +101,12 @@ def _print_execution_summary(session_state: dict, input_tokens: int, output_toke
 
 async def handle_agent_tool(tool_name: str, tool_input: dict, company_id: str, session_state: dict) -> str:
     if tool_name == "execute_sap_sql":
+        
+        # --- NEW CODE: HARD STOP ---
+        if session_state.get("final_executed_sql"):
+            return "ERROR: You already executed a successful query! STOP querying the database. You MUST immediately call the submit_dashboard tool with the data you already have."
+        # ---------------------------
+
         sql = tool_input.get("sql_query", "").strip()
         session_state["last_attempted_sql"] = sql
         
@@ -110,17 +116,16 @@ async def handle_agent_tool(tool_name: str, tool_input: dict, company_id: str, s
             
         norm_sql, rule_violations = check_business_rules(sql, company_id)
         if rule_violations:
-            # THIS PRINTS THE EXACT FIREWALL ERROR TO YOUR TERMINAL
             error_msg = "RULES VIOLATED. Please fix the SQL and retry:\n- " + "\n- ".join(rule_violations)
             print(f"\n⚠️ FIREWALL REJECTED QUERY:\n{error_msg}\n")
             return error_msg
 
         result = await execute_sap_query(norm_sql, company_id=company_id)
         if isinstance(result, dict) and "error" in result:
-            # THIS PRINTS DATABASE ERRORS TO YOUR TERMINAL
             print(f"\n❌ DATABASE ERROR:\n{result['error']}\n")
             return f"DATABASE ERROR: {result['error']}. Fix the query and retry."
 
+        # Once it hits this line, the Hard Stop above becomes active
         session_state["final_executed_sql"] = norm_sql
         sliced_result = slice_rows(result, 25)
         
@@ -225,7 +230,7 @@ OUTPUT
     
     messages.append({"role": "user", "parts": [question]})
     
-    max_steps = 5 
+    max_steps = 6 
 
     for step in range(max_steps):
         try:
